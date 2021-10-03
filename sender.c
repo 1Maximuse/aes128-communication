@@ -93,12 +93,19 @@ void shiftrows(uint8_t* block) {
 }
 
 uint8_t multiply(uint8_t b, uint8_t amount) {
-    uint8_t original = b;
-    uint8_t overflow = original >> 7;
-    b <<= 1;
-    if (overflow) b ^= 0x1B;
-    if (amount == 3) b ^= original;
-    return b;
+    uint8_t p = 0;
+	uint8_t counter;
+	uint8_t overflow;
+	for(counter = 0; counter < 8; counter++) {
+		if((amount & 1) == 1) 
+			p ^= b;
+		overflow = b >> 7;
+		b <<= 1;
+		if(overflow) 
+			b ^= 0x1B;		
+		amount >>= 1;
+	}
+	return p;
 }
 
 void mixcolumns(uint8_t* block) {
