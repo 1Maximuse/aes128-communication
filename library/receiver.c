@@ -27,7 +27,7 @@ int recvdata(int conn_fd, char* filename) {
     uint32_t size = 0;
     ssize_t len;
     while ((len = recv(conn_fd, buffer, 16, 0)) == 16) {
-        // AES_ECB_decrypt(&ctx, buffer);
+        AES_ECB_decrypt(&ctx, buffer);
         fwrite(buffer, sizeof(uint8_t), 16, f);
         memset(buffer, 0, 16);
         size += len;
