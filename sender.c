@@ -1,8 +1,11 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <unistd.h>
+#include <errno.h>
 
 // https://www.random.org/cgi-bin/randbyte?nbytes=16&format=h
 #define KEY { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 }
@@ -84,7 +87,7 @@ void subbytes(uint8_t* block) {
 
 void shiftrows(uint8_t* block) {
     for (uint8_t i = 1; i < 4; i++) {
-        uint32_t* row = block + (i << 2);
+        uint32_t* row = (uint32_t*)block + (i << 2);
         *row = ( *row >> (i << 3) ) + ( *row << ((4-i) << 3) );
     }
 }
@@ -129,49 +132,64 @@ void aesencrypt(uint8_t* block) {
     transpose(block);
 }
 
-void senddata(int conn_fd) {
-
+int senddata(int conn_fd, char* filename) {
+    FILE* f = fopen(filename, "rb");
+    if (f == NULL) {
+        printf("Cannot open file.\n");
+        exit(1);
+    }
+    uint8_t buffer[16];
+    memset(buffer, 0, 16);
+    size_t len;
+    while ((len = fread(buffer, sizeof(uint8_t), 16, f)) > 0) {
+        aesencrypt(buffer);
+        send(conn_fd, buffer, 16, 0);
+        memset(buffer, 0, 16);
+    }
+    fclose(f);
 }
 
-int main() {
-    uint8_t data[16] = { 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10 };
-
-    aesencrypt(data);
-    for (uint8_t i = 0; i < 16; i++) {
-        printf("%02x ", data[i]);
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        printf("No file specified.\n");
+        exit(1);
     }
-    printf("\n");
 
-    // int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
-    // if (sock_fd == -1) {
-    //     printf("Cannot create socket.\n");
-    //     return 1;
-    // }
+    int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd == -1) {
+        printf("Cannot create socket.\n");
+        exit(1);
+    }
+    
+    int opt = 1;
+    setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
 
-    // struct sockaddr_in srv_address, cli_address;
+    struct sockaddr_in srv_address, cli_address;
 
-    // bzero(&srv_address, sizeof(struct sockaddr_in));
-    // srv_address.sin_family = AF_INET;
-    // srv_address.sin_addr.s_addr = htonl(INADDR_ANY);
-    // srv_address.sin_port = htons(5555);
+    bzero(&srv_address, sizeof(struct sockaddr_in));
+    srv_address.sin_family = AF_INET;
+    srv_address.sin_addr.s_addr = htonl(INADDR_ANY);
+    srv_address.sin_port = htons(10000);
 
-    // if (bind(sock_fd, (struct sockaddr*)&srv_address, sizeof(struct sockaddr_in)) != 0) {
-    //     printf("Cannot bind socket to address.\n");
-    //     return 1;
-    // }
+    if (bind(sock_fd, (struct sockaddr*)&srv_address, sizeof(struct sockaddr_in)) != 0) {
+        printf("Cannot bind socket to address.\n");
+        exit(1);
+    }
 
-    // if (listen(sock_fd, 1) != 0) {
-    //     print("Cannot listen for connections.\n");
-    //     return 1;
-    // }
+    if (listen(sock_fd, 1) != 0) {
+        printf("Cannot listen for connections.\n");
+        exit(1);
+    }
 
-    // int conn_fd = accept(sock_fd, (struct sockaddr*)&cli_address, sizeof(struct sockaddr_in));
-    // if (conn_fd == -1) {
-    //     printf("Cannot accept connection.\n");
-    //     return 1;
-    // }
+    socklen_t cli_address_size = sizeof(cli_address);
+    int conn_fd = accept(sock_fd, (struct sockaddr*)&cli_address, &cli_address_size);
+    if (conn_fd == -1) {
+        printf("Cannot accept connection. %d\n", errno);
+        exit(1);
+    }
 
-    // senddata(conn_fd);
+    senddata(conn_fd, argv[1]);
 
-    // close(sock_fd);
+    close(conn_fd);
+    close(sock_fd);
 }
