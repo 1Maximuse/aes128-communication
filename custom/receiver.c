@@ -5,6 +5,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include <unistd.h>
+#include <time.h>
 
 #define KEY { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 }
 
@@ -106,7 +107,6 @@ void inversemixcolumns(uint8_t* block) {
     }
 }
 
-
 void keyexpansion(uint8_t* key, uint32_t* expanded_key) {
     for (uint8_t i = 0; i < 4; i++) {
         uint8_t four_i = i << 2;
@@ -156,9 +156,7 @@ void aesdecrypt(uint8_t* block) {
     }
     
     transpose(block);
-
 }
-
 
 int recvdata(int conn_fd, char* filename) {
     FILE* f = fopen(filename, "wb");
@@ -168,13 +166,17 @@ int recvdata(int conn_fd, char* filename) {
     }
     uint8_t buffer[16];
     memset(buffer, 0, 16);
+    uint32_t size = 0;
     ssize_t len;
-    while ((len = recv(conn_fd, buffer, 16, 0)) > 0) {
+    while ((len = recv(conn_fd, buffer, 16, 0)) == 16) {
         aesdecrypt(buffer);
-        fwrite(buffer, sizeof(uint8_t), len, f);
+        fwrite(buffer, sizeof(uint8_t), 16, f);
         memset(buffer, 0, 16);
+        size += len;
     }
     fclose(f);
+
+    truncate(filename, size - buffer[0]);
 }
 
 int main(int argc, char** argv) {
@@ -201,7 +203,13 @@ int main(int argc, char** argv) {
         exit(1);
     }
 
+    clock_t start, end;
+    start = clock();
     recvdata(sock_fd, argv[1]);
+    end = clock();
+
+    double seconds = ((double)(end-start)) / CLOCKS_PER_SEC;
+    printf("%lf seconds.\n", seconds);
 
     close(sock_fd);
 }
