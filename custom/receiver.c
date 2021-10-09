@@ -167,22 +167,13 @@ void rsadecrypt(mpz_t d, mpz_t n, mpz_t input, uint8_t* output) {
 
     uint8_t decryptedbytes[128];
     mpztobytearray(decryptedbytes, decrypted);
-    for (uint8_t i = 0; i < 128; i++) {
-        printf("%02x ", decryptedbytes[i]);
-    }
     for (uint8_t i = 112; i < 128; i++) {
-        output[i] = decryptedbytes[i];
+        output[i-112] = decryptedbytes[i];
     }
     mpz_clear(decrypted);
 }
 
-void aesdecrypt(uint8_t* block, uint8_t* key) {
-    
-    uint32_t expanded_key[44];
-    memset(expanded_key, 0, 44*sizeof(uint32_t));
-
-    keyexpansion(key, expanded_key);
-
+void aesdecrypt(uint8_t* block, uint32_t* expanded_key) {
     transpose(block);
 
     addroundkey(block, expanded_key + 40);
@@ -206,10 +197,16 @@ int recvdata(int conn_fd, char* filename, uint8_t* key) {
     }
     uint8_t buffer[16];
     memset(buffer, 0, 16);
+    
+    uint32_t expanded_key[44];
+    memset(expanded_key, 0, 44*sizeof(uint32_t));
+
+    keyexpansion(key, expanded_key);
+
     uint32_t size = 0;
     ssize_t len;
     while ((len = recv(conn_fd, buffer, 16, 0)) == 16) {
-        aesdecrypt(buffer, key);
+        aesdecrypt(buffer, expanded_key);
         fwrite(buffer, sizeof(uint8_t), 16, f);
         memset(buffer, 0, 16);
         size += len;
@@ -223,26 +220,13 @@ void recvaeskey(int sock, mpz_t encrypted_data, mpz_t d, mpz_t n) {
     uint8_t buffer[128];
     memset(buffer, 0, 128);
     recv(sock, buffer, 128, 0);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     bytearraytompz(buffer, encrypted_data);
     memset(buffer, 0, 128);
     recv(sock, buffer, 128, 0);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     bytearraytompz(buffer, d);
     memset(buffer, 0, 128);
     recv(sock, buffer, 128, 0);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     bytearraytompz(buffer, n);
-    // gmp_printf("%Zd\n%Zd\n%Zd\n", encrypted_data, d, n);
 }
 
 int main(int argc, char** argv) {
@@ -280,7 +264,7 @@ int main(int argc, char** argv) {
     rsadecrypt(d, n, encrypted_key, key);
     mpz_clears(encrypted_key, d, n, NULL);
     
-    // recvdata(sock_fd, argv[1], key);
+    recvdata(sock_fd, argv[1], key);
     
     // end = clock();
 

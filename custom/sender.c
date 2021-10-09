@@ -121,8 +121,6 @@ void mixcolumns(uint8_t* block) {
 }
 
 void aesencrypt(uint8_t* block, uint32_t* expanded_key) {
-    uint8_t key[16] = { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 };
-
     transpose(block);
 
     addroundkey(block, expanded_key);
@@ -170,11 +168,11 @@ void generateaeskey(uint8_t* key) {
 }
 
 void generateprime(mpz_t number, gmp_randstate_t rstate) {
-    mpz_ui_pow_ui(number, 2, RSA_KEY_LENGTH-1);
+    mpz_ui_pow_ui(number, 2, (RSA_KEY_LENGTH >> 1) - 1);
     while (1) {
         mpz_t randn, addn;
         mpz_inits(randn, addn, NULL);
-        mpz_urandomb(randn, rstate, RSA_KEY_LENGTH-1);
+        mpz_urandomb(randn, rstate, (RSA_KEY_LENGTH >> 1) - 1);
         mpz_add(addn, number, randn);
 
         if (mpz_probab_prime_p(addn, 40)) {
@@ -250,7 +248,6 @@ void rsaencrypt(mpz_t e, mpz_t n, uint8_t* input, mpz_t output) {
         mpz_clear(byte);
     }
     mpz_powm_sec(output, inputnum, e, n);
-    // gmp_printf("%Zd\n", output);
 }
 
 void mpztobytearray(uint8_t* array, mpz_t data) {
@@ -269,28 +266,15 @@ void mpztobytearray(uint8_t* array, mpz_t data) {
 }
 
 void sendaeskey(int conn_fd, mpz_t encrypted_data, mpz_t d, mpz_t n) {
-    // gmp_printf("%Zd\n%Zd\n%Zd\n", encrypted_data, d, n);
     uint8_t buffer[128];
     memset(buffer, 0, 128);
     mpztobytearray(buffer, encrypted_data);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     send(conn_fd, buffer, 128, 0);
     memset(buffer, 0, 128);
     mpztobytearray(buffer, d);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     send(conn_fd, buffer, 128, 0);
     memset(buffer, 0, 128);
     mpztobytearray(buffer, n);
-    // for (int i = 0; i < 128; i++) {
-    //     printf("%02x", buffer[i]);
-    // }
-    // printf("\n");
     send(conn_fd, buffer, 128, 0);
 }
 
@@ -343,11 +327,6 @@ int main(int argc, char** argv) {
     uint8_t key[16];
     srand(time(NULL));
     generateaeskey(key);
-    for (int i=0;i<16;i++) {
-        // printf("%02x ",key[i]);
-        printf("asd");
-    }
-    printf("asddd");
     uint8_t decrypted_data[16];
     mpz_t encrypted_data;
     mpz_init(encrypted_data);
