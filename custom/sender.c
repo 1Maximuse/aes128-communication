@@ -8,8 +8,9 @@
 #include <errno.h>
 #include <time.h>
 
-// https://www.random.org/cgi-bin/randbyte?nbytes=16&format=h
-#define KEY { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 }
+#include <gmp.h>
+
+#define RSA_KEY_LENGTH 1024
 
 uint8_t sbox[256] = {
     0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
@@ -119,12 +120,8 @@ void mixcolumns(uint8_t* block) {
     }
 }
 
-void aesencrypt(uint8_t* block) {
-    uint8_t key[16] = KEY;
-    uint32_t expanded_key[44];
-    memset(expanded_key, 0, 44*sizeof(uint32_t));
-
-    keyexpansion(key, expanded_key);
+void aesencrypt(uint8_t* block, uint32_t* expanded_key) {
+    uint8_t key[16] = { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 };
 
     transpose(block);
 
@@ -140,7 +137,8 @@ void aesencrypt(uint8_t* block) {
     transpose(block);
 }
 
-int senddata(int conn_fd, char* filename) {
+int senddata(int conn_fd, char* filename, uint8_t* aeskey) {
+
     FILE* f = fopen(filename, "rb");
     if (f == NULL) {
         printf("Cannot open file.\n");
@@ -148,16 +146,152 @@ int senddata(int conn_fd, char* filename) {
     }
     uint8_t buffer[16];
     memset(buffer, 0, 16);
+
+    uint32_t expanded_key[44];
+    memset(expanded_key, 0, 44*sizeof(uint32_t));
+    keyexpansion(aeskey, expanded_key);
+    
     size_t len;
     uint8_t buflength;
     while ((len = fread(buffer, sizeof(uint8_t), 16, f)) > 0) {
-        aesencrypt(buffer);
+        aesencrypt(buffer, expanded_key);
         send(conn_fd, buffer, 16, 0);
         memset(buffer, 0, 16);
         buflength = 16 - len;
     }
     fclose(f);
     send(conn_fd, &buflength, 1, 0);
+}
+
+void generateaeskey(uint8_t* key) {
+    for (uint8_t i = 0; i < 16; i++) {
+        key[i] = rand() & 0xFF;
+    }
+}
+
+void generateprime(mpz_t number, gmp_randstate_t rstate) {
+    mpz_ui_pow_ui(number, 2, RSA_KEY_LENGTH-1);
+    while (1) {
+        mpz_t randn, addn;
+        mpz_inits(randn, addn, NULL);
+        mpz_urandomb(randn, rstate, RSA_KEY_LENGTH-1);
+        mpz_add(addn, number, randn);
+
+        if (mpz_probab_prime_p(addn, 40)) {
+            mpz_set(number, addn);
+            mpz_clears(randn, addn, NULL);
+            return;
+        }
+
+        mpz_clears(randn, addn, NULL);
+    }   
+}
+
+void phi(mpz_t out, mpz_t p, mpz_t q){
+    mpz_t pmin, qmin;
+    mpz_inits(pmin, qmin, NULL);
+    mpz_sub_ui(pmin, p, 1);
+    mpz_sub_ui(qmin, q, 1);
+    mpz_mul(out, pmin, qmin);
+    mpz_clears(pmin, qmin, NULL);
+}
+
+void generaterelativelyprime(mpz_t out, mpz_t phin, gmp_randstate_t rstate) {
+    mpz_urandomm(out, rstate, phin);
+    
+    while (1) {
+        mpz_t gcd;
+        mpz_init(gcd);
+        mpz_gcd(gcd, phin, out);
+
+        if (mpz_get_ui(gcd) == 1) {
+            mpz_clear(gcd);
+            return;
+        }
+        mpz_urandomm(out, rstate, phin);
+        mpz_clear(gcd);
+    }
+}
+
+void generatersakeypair(mpz_t d, mpz_t e, mpz_t n) {
+    unsigned long seed = time(0);
+    gmp_randstate_t rstate;
+    gmp_randinit_mt(rstate);
+    gmp_randseed_ui(rstate, seed);
+
+    mpz_t p, q;
+    mpz_inits(p, q, NULL);
+    generateprime(p, rstate);
+    generateprime(q, rstate);
+
+    mpz_mul(n, p, q);
+    mpz_t phin;
+    mpz_init(phin);
+    phi(phin, p, q);
+    generaterelativelyprime(e, phin, rstate);
+    mpz_clears(p, q, NULL);
+
+    mpz_invert(d, e, phin);
+
+    gmp_randclear(rstate);
+}
+
+void rsaencrypt(mpz_t e, mpz_t n, uint8_t* input, mpz_t output) {  
+    mpz_t inputnum;
+    mpz_init(inputnum);
+    for (uint8_t i = 0; i < 16; i++) {
+        mpz_t byte;
+        mpz_init(byte);
+        mpz_set_ui(byte, input[i]);
+        mpz_mul_2exp(byte, byte, (15-i) << 3);
+
+        mpz_add(inputnum, inputnum, byte);
+
+        mpz_clear(byte);
+    }
+    mpz_powm_sec(output, inputnum, e, n);
+    // gmp_printf("%Zd\n", output);
+}
+
+void mpztobytearray(uint8_t* array, mpz_t data) {
+    memset(array, 0, 128);
+    for (int i = 127; i >= 0; i--) {
+        mpz_t byte, mask;
+        mpz_inits(byte, mask, NULL);
+        mpz_set_ui(mask, 0xFF);
+        mpz_and(byte, data, mask);
+
+        array[i] = mpz_get_ui(byte);
+        mpz_fdiv_q_2exp(data, data, 8);
+
+        mpz_clears(byte, mask, NULL);
+    }
+}
+
+void sendaeskey(int conn_fd, mpz_t encrypted_data, mpz_t d, mpz_t n) {
+    // gmp_printf("%Zd\n%Zd\n%Zd\n", encrypted_data, d, n);
+    uint8_t buffer[128];
+    memset(buffer, 0, 128);
+    mpztobytearray(buffer, encrypted_data);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    send(conn_fd, buffer, 128, 0);
+    memset(buffer, 0, 128);
+    mpztobytearray(buffer, d);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    send(conn_fd, buffer, 128, 0);
+    memset(buffer, 0, 128);
+    mpztobytearray(buffer, n);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    send(conn_fd, buffer, 128, 0);
 }
 
 int main(int argc, char** argv) {
@@ -199,13 +333,33 @@ int main(int argc, char** argv) {
         exit(1);
     }
 
-    clock_t start, end;
-    start = clock();
-    senddata(conn_fd, argv[1]);
-    end = clock();
+    // clock_t start, end;
+    // start = clock();
 
-    double seconds = ((double)(end-start)) / CLOCKS_PER_SEC;
-    printf("%lf seconds.\n", seconds);
+    mpz_t d, e, n;
+    mpz_inits(d, e, n, NULL);
+    generatersakeypair(d, e, n);
+    
+    uint8_t key[16];
+    srand(time(NULL));
+    generateaeskey(key);
+    for (int i=0;i<16;i++) {
+        // printf("%02x ",key[i]);
+        printf("asd");
+    }
+    printf("asddd");
+    uint8_t decrypted_data[16];
+    mpz_t encrypted_data;
+    mpz_init(encrypted_data);
+    rsaencrypt(e, n, key, encrypted_data);
+    sendaeskey(conn_fd, encrypted_data, d, n);
+    mpz_clears(encrypted_data, d, e, n, NULL);
+
+    senddata(conn_fd, argv[1], key);
+
+    // end = clock();
+    // double seconds = ((double)(end-start)) / CLOCKS_PER_SEC;
+    // printf("%lf seconds.\n", seconds);
 
     close(conn_fd);
     close(sock_fd);

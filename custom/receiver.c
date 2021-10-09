@@ -6,8 +6,9 @@
 #include <inttypes.h>
 #include <unistd.h>
 #include <time.h>
+#include <gmp.h>
 
-#define KEY { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 }
+// #define KEY { 0x0f, 0x15, 0x71, 0xc9, 0x47, 0xd9, 0xe8, 0x59, 0x0c, 0xb7, 0xad, 0xd6, 0xaf, 0x7f, 0x67, 0x98 }
 
 uint8_t inversesbox[256] = {
     0x52, 0x09, 0x6A, 0xD5, 0x30, 0x36, 0xA5, 0x38, 0xBF, 0x40, 0xA3, 0x9E, 0x81, 0xF3, 0xD7, 0xFB,
@@ -136,9 +137,47 @@ void keyexpansion(uint8_t* key, uint32_t* expanded_key) {
     }
 }
 
-void aesdecrypt(uint8_t* block) {
+void mpztobytearray(uint8_t* array, mpz_t data) {
+    memset(array, 0, 128);
+    for (int i = 127; i >= 0; i--) {
+        mpz_t byte, mask;
+        mpz_inits(byte, mask, NULL);
+        mpz_set_ui(mask, 0xFF);
+        mpz_and(byte, data, mask);
 
-    uint8_t key[16] = KEY;
+        array[i] = mpz_get_ui(byte);
+        mpz_fdiv_q_2exp(data, data, 8);
+
+        mpz_clears(byte, mask, NULL);
+    }
+}
+
+
+void bytearraytompz(uint8_t* array, mpz_t data) {
+    for (int i = 0; i < 128; i++) {
+        mpz_mul_2exp(data, data, 8);
+        mpz_add_ui(data, data, array[i]);
+    }
+}
+
+void rsadecrypt(mpz_t d, mpz_t n, mpz_t input, uint8_t* output) {
+    mpz_t decrypted;
+    mpz_init(decrypted);
+    mpz_powm_sec(decrypted, input, d, n);
+
+    uint8_t decryptedbytes[128];
+    mpztobytearray(decryptedbytes, decrypted);
+    for (uint8_t i = 0; i < 128; i++) {
+        printf("%02x ", decryptedbytes[i]);
+    }
+    for (uint8_t i = 112; i < 128; i++) {
+        output[i] = decryptedbytes[i];
+    }
+    mpz_clear(decrypted);
+}
+
+void aesdecrypt(uint8_t* block, uint8_t* key) {
+    
     uint32_t expanded_key[44];
     memset(expanded_key, 0, 44*sizeof(uint32_t));
 
@@ -158,7 +197,8 @@ void aesdecrypt(uint8_t* block) {
     transpose(block);
 }
 
-int recvdata(int conn_fd, char* filename) {
+int recvdata(int conn_fd, char* filename, uint8_t* key) {
+
     FILE* f = fopen(filename, "wb");
     if (f == NULL) {
         printf("Cannot open file.\n");
@@ -169,7 +209,7 @@ int recvdata(int conn_fd, char* filename) {
     uint32_t size = 0;
     ssize_t len;
     while ((len = recv(conn_fd, buffer, 16, 0)) == 16) {
-        aesdecrypt(buffer);
+        aesdecrypt(buffer, key);
         fwrite(buffer, sizeof(uint8_t), 16, f);
         memset(buffer, 0, 16);
         size += len;
@@ -177,6 +217,32 @@ int recvdata(int conn_fd, char* filename) {
     fclose(f);
 
     truncate(filename, size - buffer[0]);
+}
+
+void recvaeskey(int sock, mpz_t encrypted_data, mpz_t d, mpz_t n) {
+    uint8_t buffer[128];
+    memset(buffer, 0, 128);
+    recv(sock, buffer, 128, 0);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    bytearraytompz(buffer, encrypted_data);
+    memset(buffer, 0, 128);
+    recv(sock, buffer, 128, 0);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    bytearraytompz(buffer, d);
+    memset(buffer, 0, 128);
+    recv(sock, buffer, 128, 0);
+    // for (int i = 0; i < 128; i++) {
+    //     printf("%02x", buffer[i]);
+    // }
+    // printf("\n");
+    bytearraytompz(buffer, n);
+    // gmp_printf("%Zd\n%Zd\n%Zd\n", encrypted_data, d, n);
 }
 
 int main(int argc, char** argv) {
@@ -203,13 +269,23 @@ int main(int argc, char** argv) {
         exit(1);
     }
 
-    clock_t start, end;
-    start = clock();
-    recvdata(sock_fd, argv[1]);
-    end = clock();
+    // clock_t start, end;
+    // start = clock();
 
-    double seconds = ((double)(end-start)) / CLOCKS_PER_SEC;
-    printf("%lf seconds.\n", seconds);
+    mpz_t encrypted_key, n, d;
+    mpz_inits(encrypted_key, n, d, NULL);
+    recvaeskey(sock_fd, encrypted_key, d, n);
+
+    uint8_t key[16];
+    rsadecrypt(d, n, encrypted_key, key);
+    mpz_clears(encrypted_key, d, n, NULL);
+    
+    // recvdata(sock_fd, argv[1], key);
+    
+    // end = clock();
+
+    // double seconds = ((double)(end-start)) / CLOCKS_PER_SEC;
+    // printf("%lf seconds.\n", seconds);
 
     close(sock_fd);
 }
